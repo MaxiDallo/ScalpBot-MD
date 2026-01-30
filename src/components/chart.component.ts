@@ -50,6 +50,9 @@ export class ChartComponent implements OnDestroy {
   private entryLine: IPriceLine | null = null;
   private tpLine: IPriceLine | null = null;
   private slLine: IPriceLine | null = null;
+  
+  // New: Trailing Trigger Line
+  private beTriggerLine: IPriceLine | null = null;
 
   constructor() {
     effect(() => {
@@ -115,14 +118,16 @@ export class ChartComponent implements OnDestroy {
       }
     });
 
-    // Effect to handle Active Position Lines
+    // Effect to handle Active Position Lines (Creation/Deletion)
     effect(() => {
       const pos = this.bot.activePosition();
+      const useTrailing = this.bot.useTrailingStop();
       
       // Clean up old lines
       if (this.entryLine) { this.candleSeries?.removePriceLine(this.entryLine); this.entryLine = null; }
       if (this.tpLine) { this.candleSeries?.removePriceLine(this.tpLine); this.tpLine = null; }
       if (this.slLine) { this.candleSeries?.removePriceLine(this.slLine); this.slLine = null; }
+      if (this.beTriggerLine) { this.candleSeries?.removePriceLine(this.beTriggerLine); this.beTriggerLine = null; }
 
       if (pos && this.candleSeries) {
         const isLong = pos.side === 'LONG';
@@ -155,6 +160,49 @@ export class ChartComponent implements OnDestroy {
           lineStyle: LineStyle.Dashed,
           axisLabelVisible: true,
           title: 'SL',
+        });
+
+        // TRAILING TRIGGER LINE (Visual Aid)
+        // Show only if enabled and NOT yet triggered
+        if (useTrailing && !pos.isTrailingActive) {
+            const tpDist = Math.abs(pos.takeProfit - pos.entryPrice);
+            const triggerPrice = isLong 
+                ? pos.entryPrice + (tpDist * 0.5)
+                : pos.entryPrice - (tpDist * 0.5);
+
+            this.beTriggerLine = this.candleSeries.createPriceLine({
+                price: triggerPrice,
+                color: '#3b82f6', // Blue
+                lineWidth: 1,
+                lineStyle: LineStyle.SparseDotted,
+                axisLabelVisible: false,
+                title: 'BE TRIGGER',
+            });
+        }
+      }
+    });
+
+    // New Effect: Real-time PnL Update on Entry Line Label
+    effect(() => {
+      const pos = this.bot.activePosition();
+      const candles = this.market.candles();
+      
+      // Only run if we have an active position, an entry line, and price data
+      if (pos && this.entryLine && candles.length > 0) {
+        const currentPrice = candles[candles.length - 1].close;
+        const leverage = pos.leverage || 1;
+        let roe = 0;
+        
+        if (pos.side === 'LONG') {
+           roe = ((currentPrice - pos.entryPrice) / pos.entryPrice) * leverage * 100;
+        } else {
+           roe = ((pos.entryPrice - currentPrice) / pos.entryPrice) * leverage * 100;
+        }
+        
+        const sign = roe >= 0 ? '+' : '';
+        // Update the label title dynamically
+        this.entryLine.applyOptions({
+           title: `${pos.side} ENTRY (${sign}${roe.toFixed(2)}%)`
         });
       }
     });

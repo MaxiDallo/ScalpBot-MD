@@ -84,6 +84,61 @@ import { BotEngineService, BotMode } from '../services/bot-engine.service';
         <!-- Common Settings -->
         <div class="h-px bg-gray-800"></div>
 
+        <!-- Strategy Settings (TP/SL) -->
+        <div class="flex flex-col gap-3">
+           <label class="text-xs text-gray-400 uppercase font-semibold">Strategy Risk (Scalping)</label>
+           <div class="grid grid-cols-2 gap-3">
+             <div class="flex flex-col gap-1">
+               <label class="text-[10px] text-gray-500">Take Profit %</label>
+               <input 
+                 type="number" 
+                 step="0.1" 
+                 [(ngModel)]="tpVal" 
+                 (change)="bot.tpPercent.set(tpVal)"
+                 class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-green-400 focus:border-green-500 focus:outline-none" />
+             </div>
+             <div class="flex flex-col gap-1">
+               <label class="text-[10px] text-gray-500">Stop Loss %</label>
+               <input 
+                 type="number" 
+                 step="0.1" 
+                 [(ngModel)]="slVal" 
+                 (change)="bot.slPercent.set(slVal)"
+                 class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-red-400 focus:border-red-500 focus:outline-none" />
+             </div>
+           </div>
+           
+           <!-- Toggles -->
+           <div class="flex flex-col gap-2 mt-2">
+              <div class="flex flex-col gap-1">
+                <div class="flex items-center gap-2">
+                  <input 
+                    type="checkbox" 
+                    id="trailing"
+                    [(ngModel)]="useTrailing" 
+                    (change)="bot.useTrailingStop.set(useTrailing)"
+                    class="w-4 h-4 rounded bg-gray-800 border-gray-600 text-cyan-600 focus:ring-cyan-500">
+                  <label for="trailing" class="text-xs text-gray-300 font-semibold">Active Trailing Stop</label>
+                </div>
+                <p class="text-[10px] text-gray-500 ml-6">
+                   Moves SL to Entry when 50% of TP is reached.
+                </p>
+              </div>
+
+              <div class="flex items-center gap-2">
+                <input 
+                  type="checkbox" 
+                  id="signalExit"
+                  [(ngModel)]="useSignalExit" 
+                  (change)="bot.useSignalExit.set(useSignalExit)"
+                  class="w-4 h-4 rounded bg-gray-800 border-gray-600 text-cyan-600 focus:ring-cyan-500">
+                <label for="signalExit" class="text-xs text-gray-300">Exit on Reversal Signal</label>
+              </div>
+           </div>
+        </div>
+        
+        <div class="h-px bg-gray-800"></div>
+
         <!-- Timeframe Selector -->
         <div class="flex flex-col gap-2">
           <label class="text-xs text-gray-400 uppercase font-semibold">Timeframe</label>
@@ -173,6 +228,10 @@ export class ControlsComponent {
   // Local component state
   posSize: number = 100;
   levValue: number = 1;
+  tpVal: number = 0.5;
+  slVal: number = 0.3;
+  useTrailing: boolean = false;
+  useSignalExit: boolean = false; // Default false to stop quick closes
 
   setTab(mode: BotMode) {
     this.bot.setMode(mode);

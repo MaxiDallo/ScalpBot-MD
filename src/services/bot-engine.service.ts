@@ -14,9 +14,10 @@ export interface ActivePosition {
   takeProfit: number;
   stopLoss: number;
   amount: number;
-  leverage: number; // Added leverage field
+  leverage: number;
   startTime: number;
   triggerReason: string;
+  isTrailingActive: boolean; // To track if Break Even has been triggered
 }
 
 export interface ClosedTrade extends ActivePosition {
@@ -53,11 +54,18 @@ export class BotEngineService {
   // Trading settings
   positionSize = signal<number>(100); // USDT Margin
   leverage = signal<number>(1); // Default 1x
+
+  // Strategy Risk Settings
+  tpPercent = signal<number>(0.5); // 0.5% default
+  slPercent = signal<number>(0.3); // 0.3% default
+  useTrailingStop = signal<boolean>(false);
+  useSignalExit = signal<boolean>(false); // NEW: Toggle for Signal Exit logic
   
   logs = signal<LogEntry[]>([]);
   
   // Strategy State
   activePosition = signal<ActivePosition | null>(null);
+  lastClosedCandleTime = 0; // To prevent over-trading on same candle
   
   // HISTORY & METRICS
   tradeHistory = signal<ClosedTrade[]>([]);
@@ -115,11 +123,21 @@ export class BotEngineService {
       const sma20 = this.market.sma20();
 
       if (this.isActive() && candles.length > 0) {
-        this.checkStrategy(candles[candles.length - 1].close, sma5, sma10, sma20);
+        // We use the last closed candle for signal confirmation if desired, 
+        // but for real-time scalping, we often look at the current forming candle or the last completed one.
+        // The requirement says "analyze the close of each candle", implying we check the latest closed state.
+        // However, in live streaming, 'candles' updates every tick. 
+        // We will check strategy on the LATEST available price point (current candle).
+        const currentCandle = candles[candles.length - 1];
+        
+        // Ensure arrays are aligned
+        if(sma5.length > 0 && sma10.length > 0 && sma20.length > 0) {
+            this.checkStrategy(currentCandle, sma5, sma10, sma20);
+        }
       }
     });
     
-    // Check for TP/SL hits
+    // Check for TP/SL hits (Tick by Tick)
     effect(() => {
         const candles = this.market.candles();
         const pos = this.activePosition();
@@ -176,74 +194,139 @@ export class BotEngineService {
     this.logs.update(logs => [{ time, message, type }, ...logs].slice(0, 50));
   }
 
-  private checkStrategy(currentPrice: number, sma5Data: any[], sma10Data: any[], sma20Data: any[]) {
-    if (sma5Data.length < 2 || sma10Data.length < 2 || sma20Data.length < 2) return;
+  private checkStrategy(currentCandle: any, sma5Data: any[], sma10Data: any[], sma20Data: any[]) {
+    // Need at least one valid point
+    if (sma5Data.length < 1 || sma10Data.length < 1 || sma20Data.length < 1) return;
 
-    const currSMA5 = sma5Data[sma5Data.length - 1].value;
-    const prevSMA5 = sma5Data[sma5Data.length - 2].value;
-    const currSMA10 = sma10Data[sma10Data.length - 1].value;
-    const prevSMA10 = sma10Data[sma10Data.length - 2].value;
-    const currSMA20 = sma20Data[sma20Data.length - 1].value;
-
-    const isCrossUp = prevSMA5 <= prevSMA10 && currSMA5 > currSMA10;
-    const isCrossDown = prevSMA5 >= prevSMA10 && currSMA5 < currSMA10;
-    const isUptrend = currentPrice > currSMA20;
-    const isDowntrend = currentPrice < currSMA20;
+    const currentPrice = currentCandle.close;
+    
+    // Get latest SMA values (corresponding to current time)
+    const sma5 = sma5Data[sma5Data.length - 1].value;
+    const sma10 = sma10Data[sma10Data.length - 1].value;
+    const sma20 = sma20Data[sma20Data.length - 1].value;
 
     const pos = this.activePosition();
 
-    if (!pos) {
-        if (isCrossUp && isUptrend) {
-            this.openPosition('LONG', currentPrice, 'SMA 5/10 Cross UP + > SMA20');
-        } else if (isCrossDown && isDowntrend) {
-            if (this.currentMode() === 'VST' || this.marketType() === 'FUTURES') {
-                this.openPosition('SHORT', currentPrice, 'SMA 5/10 Cross DOWN + < SMA20');
-            }
-        }
-    } else {
-        if (pos.side === 'LONG' && isCrossDown) {
-            this.closePosition(currentPrice, 'Signal Reversal (Cross Down)');
-        } else if (pos.side === 'SHORT' && isCrossUp) {
-            this.closePosition(currentPrice, 'Signal Reversal (Cross Up)');
-        }
+    // --- EXIT LOGIC (Signal Exit) ---
+    // "Salida por Señal: Si no toca TP ni SL, cerrar la posición inmediatamente si se pierde la alineación"
+    // OPTIONAL: Only if enabled by user
+    if (pos) {
+       if (this.useSignalExit()) {
+           if (pos.side === 'LONG') {
+             // Long Exit: If SMA5 crosses below SMA10 (Loss of momentum)
+             if (sma5 < sma10) {
+                this.closePosition(currentPrice, 'Signal Exit (5 < 10)');
+             }
+           } else {
+             // Short Exit: If SMA5 crosses above SMA10
+             if (sma5 > sma10) {
+                this.closePosition(currentPrice, 'Signal Exit (5 > 10)');
+             }
+           }
+       }
+       return; // Don't check entry if we are in a position
+    }
+
+    // --- ENTRY LOGIC ---
+    
+    // 1. Cool-down Check (Over-trading prevention)
+    // Wait at least 1 candle from the last close before entering again.
+    // We approximate this by checking if the current candle time is strictly greater than the last closed candle time.
+    if (currentCandle.time <= this.lastClosedCandleTime) {
+       return; 
+    }
+
+    // 2. Noise Filter
+    // "Evitar entrar si la diferencia porcentual entre la SMA5 y la SMA20 es menor al 0.1%"
+    const volatility = Math.abs(sma5 - sma20) / sma20;
+    const isVolatile = volatility >= 0.001; // 0.1%
+
+    if (!isVolatile) return; // Market is too flat
+
+    // 3. Alignment Algorithm
+    // LONG: Close > SMA5 > SMA10 > SMA20
+    const isLongAligned = currentPrice > sma5 && sma5 > sma10 && sma10 > sma20;
+    
+    // SHORT: Close < SMA5 < SMA10 < SMA20
+    const isShortAligned = currentPrice < sma5 && sma5 < sma10 && sma10 < sma20;
+
+    if (isLongAligned) {
+       this.openPosition('LONG', currentPrice, `Aligned: 5>10>20 (Vol: ${(volatility*100).toFixed(2)}%)`);
+    } else if (isShortAligned) {
+       // Only Short in Futures or VST
+       if (this.currentMode() === 'VST' || this.marketType() === 'FUTURES') {
+          this.openPosition('SHORT', currentPrice, `Aligned: 5<10<20 (Vol: ${(volatility*100).toFixed(2)}%)`);
+       }
     }
   }
 
   private checkTpSl(currentPrice: number, pos: ActivePosition) {
+    // 1. Check Hard TP/SL
     if (pos.side === 'LONG') {
         if (currentPrice >= pos.takeProfit) {
             this.closePosition(currentPrice, 'Take Profit');
+            return;
         } else if (currentPrice <= pos.stopLoss) {
             this.closePosition(currentPrice, 'Stop Loss');
+            return;
         }
     } else {
         if (currentPrice <= pos.takeProfit) {
             this.closePosition(currentPrice, 'Take Profit');
+            return;
         } else if (currentPrice >= pos.stopLoss) {
             this.closePosition(currentPrice, 'Stop Loss');
+            return;
         }
     }
+
+    // 2. Trailing Stop Logic (Break Even)
+    // "Si el precio se mueve X% a favor, mover el SL al punto de entrada"
+    // We'll define "X%" as 50% of the way to the Take Profit.
+    if (this.useTrailingStop() && !pos.isTrailingActive) {
+        const tpDist = Math.abs(pos.takeProfit - pos.entryPrice);
+        const triggerDist = tpDist * 0.5; // Trigger at 50% of TP distance
+
+        if (pos.side === 'LONG') {
+            if (currentPrice >= pos.entryPrice + triggerDist) {
+                // Move SL to Break Even (Entry Price + small buffer to cover fees maybe? let's stick to Entry)
+                const newSl = pos.entryPrice * 1.0005; // Entry + 0.05% to cover fees
+                this.updatePositionSL(newSl, true);
+                this.addLog(`Trailing Stop Activated: SL moved to Break Even (${newSl.toFixed(2)})`, 'info');
+            }
+        } else {
+             if (currentPrice <= pos.entryPrice - triggerDist) {
+                const newSl = pos.entryPrice * 0.9995; // Entry - 0.05%
+                this.updatePositionSL(newSl, true);
+                this.addLog(`Trailing Stop Activated: SL moved to Break Even (${newSl.toFixed(2)})`, 'info');
+             }
+        }
+    }
+  }
+
+  private updatePositionSL(newSl: number, isTrailing: boolean) {
+      this.activePosition.update(p => {
+          if (!p) return null;
+          return { ...p, stopLoss: newSl, isTrailingActive: isTrailing };
+      });
   }
 
   private openPosition(side: 'LONG' | 'SHORT', price: number, reason: string) {
     const amount = this.positionSize();
     const lev = this.leverage();
     
-    // Calculate TP/SL adjusted for leverage to ensure safety? 
-    // Usually TP/SL is percentage of price movement, independent of leverage for the trigger, 
-    // but the PnL impact is leveraged.
-    
+    // Dynamic TP/SL from User Inputs
+    const tpP = this.tpPercent() / 100;
+    const slP = this.slPercent() / 100;
+
     let tp, sl;
-    // We keep strict 1.5% and 1% price movement TP/SL
-    const tpPercent = 0.015; 
-    const slPercent = 0.010; 
 
     if (side === 'LONG') {
-        tp = price * (1 + tpPercent);
-        sl = price * (1 - slPercent);
+        tp = price * (1 + tpP);
+        sl = price * (1 - slP);
     } else {
-        tp = price * (1 - tpPercent);
-        sl = price * (1 + slPercent);
+        tp = price * (1 - tpP);
+        sl = price * (1 + slP);
     }
 
     if (this.currentMode() === 'VST') {
@@ -263,10 +346,11 @@ export class BotEngineService {
             amount,
             leverage: lev,
             startTime: Date.now(),
-            triggerReason: reason
+            triggerReason: reason,
+            isTrailingActive: false
         });
         
-        this.addLog(`VST ${side} OPENED @ ${price.toFixed(2)} (x${lev})`, 'success');
+        this.addLog(`VST ${side} OPENED @ ${price.toFixed(2)} (x${lev}). TP: ${this.tpPercent()}%, SL: ${this.slPercent()}%`, 'success');
     } else {
         this.addLog(`SIGNAL: Open ${side} @ ${price.toFixed(2)} (x${lev})`, 'warning');
     }
@@ -276,14 +360,18 @@ export class BotEngineService {
     const pos = this.activePosition();
     if (!pos) return;
 
+    // Record the time of the candle used for closing (approximate to now)
+    // We use this to block re-entry on the current candle
+    const candles = this.market.candles();
+    if (candles.length > 0) {
+        this.lastClosedCandleTime = candles[candles.length - 1].time;
+    }
+
     if (this.currentMode() === 'VST') {
         let pnl = 0;
         let pnlPercent = 0;
         const entry = pos.entryPrice;
         
-        // PnL Logic with Leverage:
-        // Position Value = Margin * Leverage
-        // PnL = Position Value * % Price Change
         const positionValue = pos.amount * pos.leverage;
 
         if (pos.side === 'LONG') {
