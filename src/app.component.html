@@ -1,0 +1,33 @@
+<div class="h-screen w-screen bg-gray-950 flex flex-col p-4 gap-4 overflow-hidden">
+  <!-- Top Section: Chart & Controls -->
+  <div class="flex-1 flex gap-4 min-h-0">
+    <!-- Main Chart Area -->
+    <div class="flex-1 bg-gray-900 border border-gray-800 rounded-lg overflow-hidden flex flex-col shadow-2xl relative">
+       <div class="bg-gray-800 px-4 py-2 border-b border-gray-700 flex justify-between items-center z-10">
+         <div class="flex items-center gap-3">
+            <span class="text-sm font-bold text-gray-200">BTC/USDT.P</span>
+            <span class="text-[10px] bg-green-900/50 text-green-400 px-2 py-0.5 rounded border border-green-800/50">Perpetual Futures</span>
+         </div>
+         <div class="flex gap-4 text-xs">
+           <span class="text-cyan-400 font-bold flex items-center gap-1"><span class="w-2 h-0.5 bg-cyan-400 rounded-full"></span>SMA 5</span>
+           <span class="text-yellow-400 font-bold flex items-center gap-1"><span class="w-2 h-0.5 bg-yellow-400 rounded-full"></span>SMA 10</span>
+           <span class="text-purple-400 font-bold flex items-center gap-1"><span class="w-2 h-0.5 bg-purple-400 rounded-full"></span>SMA 20</span>
+         </div>
+       </div>
+       <div class="flex-1 relative">
+         <app-chart />
+       </div>
+    </div>
+
+    <!-- Sidebar Controls -->
+    <div class="w-80 shrink-0">
+      <app-controls />
+    </div>
+  </div>
+
+  <!-- Bottom Section: Positions & Logs -->
+  <!-- Auto-height but max 40% of screen to preserve chart view -->
+  <div class="shrink-0 transition-all duration-300 ease-in-out" style="max-height: 40vh">
+    <app-bottom-panel />
+  </div>
+</div>

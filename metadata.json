@@ -1,0 +1,5 @@
+{
+  "name": "ScalpMaster Pro",
+  "description": "Professional client-side scalping bot interface. Features real-time charts via Binance public API, client-side SMA calculation, and strategy simulation.",
+  "requestFramePermissions": []
+}
